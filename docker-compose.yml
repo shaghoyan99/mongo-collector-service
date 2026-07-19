@@ -1,0 +1,83 @@
+version: "3.9"
+
+services:
+
+  mongo:
+    image: mongo:7.0
+    container_name: mongo-rs0
+    hostname: mongo
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: |
+        mongosh --quiet --eval "
+          try { rs.status().ok } catch(e) {
+            rs.initiate({_id:'rs0', members:[{_id:0, host:'mongo:27017'}]});
+            print('rs initiated');
+          }
+        "
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      POSTGRES_DB: collector_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d collector_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongo-producer-service:
+    build:
+      context: ../mongo-producer-service
+      dockerfile: Dockerfile
+    container_name: mongo-producer-service
+    ports:
+      - "8081:8081"
+    environment:
+      MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
+      MONGO_DATABASE: collector_db
+      PRODUCER_INTERVAL_MS: 1800000
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: on-failure
+
+  mongo-collector-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mongo-collector-service
+    ports:
+      - "8080:8080"
+    environment:
+      MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
+      MONGO_DATABASE: collector_db
+      MONGO_WATCH_COLLECTION: computer_components
+      POSTGRES_URL: jdbc:postgresql://postgres:5432/collector_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    depends_on:
+      mongo:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  mongo_data:
+  postgres_data:
